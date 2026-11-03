@@ -4,10 +4,11 @@ import pandas as pd
 import plotly.graph_objects as go
 import numpy as np
 from io import BytesIO
+from datetime import date
 
 st.set_page_config(page_title="主力智选工具｜复刻版", layout="wide")
 st.title("📊 主力智选工具")
-st.caption("对标截图：纳入时涨幅｜连续净流入｜主力介入度｜当日占比，支持表头排序")
+st.caption("对标截图：纳入时涨幅｜连续净流入｜主力介入度｜当日占比，表头可排序")
 
 with st.sidebar:
     st.header("筛选条件")
@@ -18,22 +19,31 @@ with st.sidebar:
     logic = st.radio("条件逻辑", ["全部满足 (AND)", "任一满足 (OR)"])
 
     st.divider()
+    st.header("板块 & ST")
+    filter_kc = st.checkbox("仅科创板")
+    filter_cy = st.checkbox("仅创业板")
+    exclude_st = st.checkbox("排除 ST 股票", value=True)
+
+    st.divider()
     st.header("叠加布林过滤")
     use_boll = st.checkbox("启用布林带过滤")
     if use_boll:
         n_boll = st.slider("布林周期", 5, 50, 20)
         std_k = st.slider("标准差倍数", 1.0, 3.0, 2.0, 0.1)
 
+    st.divider()
+    pick_date = st.date_input("回溯日期", value=date.today())
+
 stock_text = st.text_area(
-    "股票清单（一行一只，沪市 .SS，深市 .SZ）",
+    "股票清单（一行一只，沪市 .SS，深市 .SZ，科创板 .SH，创业板 .SZ）",
     value="""600519.SS
 601318.SS
 000001.SZ
 300750.SZ
 601899.SS
 000858.SZ
-600036.SS
-002594.SZ""",
+688008.SS
+300759.SZ""",
     height=160
 )
 stock_list = [s.strip() for s in stock_text.strip().splitlines() if s.strip()]
@@ -80,11 +90,19 @@ def calc_one(symbol):
             "Lower": round(df["Lower"].iloc[-1], 2),
         }
 
+    # 板块标记
+    is_kc = symbol.startswith("688")
+    is_cy = symbol.startswith("300")
+    is_st = "ST" in symbol
+
     hit = {
         "low_entry": entry_pct < 0,
         "consec_ok": last_consec >= min_consec_days,
         "involve_ok": involve_pct >= min_involve_pct,
         "ratio_ok": day_ratio >= min_day_ratio,
+        "is_kc": is_kc,
+        "is_cy": is_cy,
+        "is_st": is_st
     }
 
     sigs = []
@@ -96,6 +114,10 @@ def calc_one(symbol):
         sigs.append("主力介入充足")
     if hit["ratio_ok"]:
         sigs.append("当日资金占比高")
+    if is_kc:
+        sigs.append("科创板")
+    if is_cy:
+        sigs.append("创业板")
 
     return {
         "code": symbol,
@@ -113,6 +135,15 @@ def calc_one(symbol):
 
 
 def match_rule(row):
+    # ST 过滤
+    if exclude_st and row["hit"]["is_st"]:
+        return False
+    # 板块过滤
+    if filter_kc and not row["hit"]["is_kc"]:
+        return False
+    if filter_cy and not row["hit"]["is_cy"]:
+        return False
+
     selected = []
     if low_entry:
         selected.append(row["hit"]["low_entry"])
@@ -128,6 +159,15 @@ def match_rule(row):
         return all(selected)
     else:
         return any(selected)
+
+
+def color_val(val):
+    if val > 0:
+        return "color:red"
+    elif val < 0:
+        return "color:green"
+    else:
+        return ""
 
 
 if st.button("🚀 开始智选扫描", type="primary"):
@@ -157,10 +197,9 @@ if st.button("🚀 开始智选扫描", type="primary"):
             }
             for x in out
         ])
-        # 支持表头点击排序
-        st.dataframe(table, use_container_width=True, hide_index=True)
+        styled = table.style.map(color_val, subset=["纳入时涨幅(%)", "今日涨幅(%)"])
+        st.dataframe(styled, use_container_width=True, hide_index=True)
 
-        # 导出 CSV
         buf = BytesIO()
         table.to_csv(buf, index=False, encoding="utf-8-sig")
         st.download_button(
